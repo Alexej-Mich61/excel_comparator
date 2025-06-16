@@ -32,7 +32,8 @@ def load_excel_file():
             return None, file_path
     return None, None
 
-def display_dataframe(df, tree, file_path, row_counter_label):
+
+def display_dataframe(df, tree, file_path, row_counter_label, is_first_tree=False):
     # Очистка дерева от предыдущих данных
     tree.delete(*tree.get_children())
     if df is None:
@@ -46,7 +47,24 @@ def display_dataframe(df, tree, file_path, row_counter_label):
     for col in columns:
         tree.heading(col, text=col)
         tree.column(col, anchor="w")
-    for index, row in df.iterrows():
+
+    # Сортировка данных
+    if is_first_tree:
+        # Для первого Treeview (file1): сортировка по первому числу в столбце A
+        def get_first_number(value):
+            if pd.isna(value):
+                return float('inf')  # Бесконечность для NaN
+            numbers = re.split(r'[, ]+', str(value).strip())
+            first_num = next((int(num) for num in numbers if re.match(r'^\d+$', num)), float('inf'))
+            return first_num
+
+        df_sorted = df.sort_values(by=df.columns[0], key=lambda x: x.apply(get_first_number))
+    else:
+        # Для второго Treeview (file2): сортировка по первому столбцу как есть
+        df_sorted = df.sort_values(by=df.columns[0])
+
+    # Вставка отсортированных данных
+    for index, row in df_sorted.iterrows():
         values = ["" if pd.isna(row[col]) else row[col] for col in columns]
         tree.insert("", "end", values=values)
     tree.insert("", "end", values=[f"Файл: {os.path.basename(file_path)}"])
@@ -101,21 +119,39 @@ def apply_filter_report(df):
             return ""
         # Разделение по запятым и пробелам
         value_str = re.split(r'[, ]+', str(value).strip())
-        # Фильтрация нечисловых частей
-        numbers = [num for num in value_str if re.match(r'^\d+$', num)]
+        # Фильтрация нечисловых частей и сортировка чисел по возрастанию
+        numbers = sorted([num for num in value_str if re.match(r'^\d+$', num)])
         if numbers:
-            return ", ".join(numbers)  # Форматирование как "num1, num2"
+            return ", ".join(numbers)  # Форматирование как "num1, num2" в порядке возрастания
         return value
 
     # Применение нормализации к столбцу A (индекс 0)
     df.iloc[:, 0] = df.iloc[:, 0].apply(normalize_column_a)
 
-    # Фильтрация: столбец A содержит хотя бы одно числовое значение, и столбцы H или I содержат числовые значения
+    # Добавление столбца для отметки дубликатов
+    df['Дубликат'] = ''  # Изначально пустой столбец
+
+    # Проверка на дублирующиеся значения в столбце A только для числовых значений
+    numeric_mask = df.iloc[:, 0].str.contains(r'\d', na=False)
+    if numeric_mask.any():
+        numeric_values = df.loc[numeric_mask, df.columns[0]]
+        duplicates_mask = numeric_values.duplicated(keep=False)
+        if duplicates_mask.any():
+            # Отмечаем все строки с дубликатами меткой "ДУБЛЬ"
+            df.loc[numeric_mask & duplicates_mask, 'Дубликат'] = 'ДУБЛЬ'
+
+    # Очистка столбцов H (индекс 7) и I (индекс 8), оставляя только числовые значения
+    for col_idx in [7, 8]:  # Индексы столбцов H и I
+        if col_idx < len(df.columns):  # Проверка, чтобы избежать IndexError
+            df.iloc[:, col_idx] = pd.to_numeric(df.iloc[:, col_idx], errors='coerce')
+            df.iloc[:, col_idx] = df.iloc[:, col_idx].where(df.iloc[:, col_idx].notna(), None)
+
+    # Фильтрация: столбец A содержит хотя бы одно числовое значение,
+    # и столбцы H или I содержат числовые значения после очистки
     df = df[
         (df.iloc[:, 0].str.contains(r'\d', na=False)) &  # Проверка наличия цифр в столбце A
-        ((pd.to_numeric(df.iloc[:, 7], errors='coerce').notna()) |
-         (pd.to_numeric(df.iloc[:, 8], errors='coerce').notna()))
-        ]
+        ((df.iloc[:, 7].notna()) | (df.iloc[:, 8].notna()))  # Проверка наличия чисел в H или I
+    ]
     return df
 
 def apply_filter_pcn_data(df):
@@ -239,13 +275,13 @@ def main():
             if file_num == 1:
                 df = apply_filter_report(df)  # Применение фильтра для отчёта
                 file1, file1_path = df, path
-                display_dataframe(file1, tree1, file1_path, row_counter_label1)
+                display_dataframe(file1, tree1, file1_path, row_counter_label1, is_first_tree=True)
                 messagebox.showinfo("Ништяк", f"Загружен первый файл: {os.path.basename(path)}")
             else:
                 df = apply_filter_pcn_data(df)  # Применение фильтра для данных ПЦН
                 file2, file2_path = df, path
                 original_file2 = df.copy()  # Сохранение исходных данных
-                display_dataframe(file2, tree2, file2_path, row_counter_label2)
+                display_dataframe(file2, tree2, file2_path, row_counter_label2, is_first_tree=False)
                 messagebox.showinfo("Ништяк", f"Загружен второй файл: {os.path.basename(path)}")
 
     # Макет интерфейса
@@ -259,7 +295,7 @@ def main():
     scrollbar1 = ttk.Scrollbar(frame1, orient="vertical", command=tree1.yview)
     scrollbar1.pack(side="right", fill="y")
     tree1.configure(yscrollcommand=scrollbar1.set)
-    display_dataframe(None, tree1, "Данные не загружены", row_counter_label1)  # Начальный вызов с меткой
+    display_dataframe(None, tree1, "Данные не загружены", row_counter_label1, is_first_tree=True)  # Начальный вызов
     row_counter_label1.pack(pady=2)
 
     # Секция для второго файла
@@ -281,7 +317,7 @@ def main():
     scrollbar2 = ttk.Scrollbar(frame2, orient="vertical", command=tree2.yview)
     scrollbar2.pack(side="right", fill="y")
     tree2.configure(yscrollcommand=scrollbar2.set)
-    display_dataframe(None, tree2, "Файл не загружен", row_counter_label2)  # Начальный вызов с меткой
+    display_dataframe(None, tree2, "Файл не загружен", row_counter_label2, is_first_tree=False)  # Начальный вызов
     row_counter_label2.pack(pady=2)
 
     # Кнопка выхода
